@@ -1,11 +1,13 @@
-import { Component, ElementRef, OnInit, output, viewChild } from '@angular/core';
+import { Component, ElementRef, inject, OnInit, output, viewChild } from '@angular/core';
 
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { LatLng } from '../../../types';
+import type { Client, LatLng } from '../../../types';
+import { WebSocketService } from '../../../web-sockets/services/websocket.service';
 
-mapboxgl.accessToken =
-  'pk.eyJ1Ijoiam1mcjEwIiwiYSI6ImNtYzlxcHA4cDFidTIybXBraWQxYmVvOHkifQ.WZkB7-bsv3TTjRgK3MdomQ';
+import Cookies from 'js-cookie';
+
+mapboxgl.accessToken = '';
 
 @Component({
   selector: 'custom-map',
@@ -19,9 +21,31 @@ mapboxgl.accessToken =
   `,
 })
 export class CustomMap implements OnInit {
+  private websocketService = inject(WebSocketService);
   private mapElement = viewChild<ElementRef<HTMLDivElement>>('map');
   private map: mapboxgl.Map | null = null;
+  private markers = new Map<string, mapboxgl.Marker>();
   public center = output<LatLng>();
+
+  private onMessage$ = this.websocketService.onMessage.subscribe((message) => {
+    switch (message.type) {
+      case 'WELCOME':
+        this.createMarkers([message.payload], true);
+        break;
+      case 'CLIENT_JOINED':
+        this.createMarkers([message.payload]);
+        break;
+      case 'CLIENTS_STATE':
+        this.createMarkers(message.payload);
+        break;
+      case 'CLIENT_MOVED':
+        this.updateMarkerCoords(message.payload.clientId, message.payload.coords);
+        break;
+      case 'CLIENT_LEFT':
+        this.removeMarker(message.payload.clientId);
+        break;
+    }
+  });
 
   ngOnInit(): void {
     if (!this.mapElement()) throw new Error('Map element not found');
@@ -37,5 +61,56 @@ export class CustomMap implements OnInit {
       const currentCenter = this.map!.getCenter();
       this.center.emit({ lat: currentCenter.lat, lng: currentCenter.lng });
     });
+  }
+
+  private createMarkers(clients: Client[], isDraggable = false) {
+    if (!this.map) return;
+    for (const client of clients) {
+      const marker = new mapboxgl.Marker({
+        color: client.color,
+        draggable: isDraggable,
+      })
+        .setLngLat({
+          lng: client.coords.lng,
+          lat: client.coords.lat,
+        })
+        .setPopup(new mapboxgl.Popup({ offset: 25 }).setHTML(`<h3>${client.name}</h3>`))
+        .on('dragend', () => {
+          console.log(marker.getLngLat());
+          Cookies.set('coords', JSON.stringify(marker.getLngLat()));
+        })
+        .on('drag', () => {
+          const coords = marker.getLngLat();
+          this.websocketService.sendMessage({
+            type: 'CLIENT_MOVE',
+            payload: {
+              clientId: client.clientId,
+              coords: { lng: coords.lng, lat: coords.lat },
+            },
+          });
+        })
+        .addTo(this.map);
+
+      this.markers.set(client.clientId, marker);
+    }
+  }
+
+  private updateMarkerCoords(clientId: string, latLng: LatLng) {
+    if (!this.map) return;
+
+    const marker = this.markers.get(clientId);
+    if (!marker) return;
+
+    marker.setLngLat(latLng);
+  }
+
+  private removeMarker(clientId: string) {
+    if (!this.map) return;
+
+    const marker = this.markers.get(clientId);
+    if (!marker) return;
+
+    marker.remove();
+    this.markers.delete(clientId);
   }
 }

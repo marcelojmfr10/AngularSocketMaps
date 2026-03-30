@@ -18,6 +18,7 @@ export type ClientMessage =
   | {
       type: 'CLIENT_MOVE';
       payload: {
+        clientId: string;
         coords: LatLng;
       };
     }
